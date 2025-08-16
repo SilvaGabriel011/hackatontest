@@ -1,80 +1,69 @@
-import { BigInt, Bytes } from "@graphprotocol/graph-ts"
-import {
-  BoredApeYachtClub,
-  Approval,
-  ApprovalForAll,
-  OwnershipTransferred,
-  Transfer
-} from "../generated/BoredApeYachtClub/BoredApeYachtClub"
-import { ExampleEntity } from "../generated/schema"
+import { Transfer } from "../generated/BoredApeYachtClub/BoredApeYachtClub";
+import { Token, TransferEvent, User } from "../generated/schema";
+import { Address, BigInt } from "@graphprotocol/graph-ts";
 
-export function handleApproval(event: Approval): void {
-  // Entities can be loaded from the store using an ID; this ID
-  // needs to be unique across all entities of the same type
-  const id = event.transaction.hash.concat(
-    Bytes.fromByteArray(Bytes.fromBigInt(event.logIndex))
-  )
-  let entity = ExampleEntity.load(id)
+const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 
-  // Entities only exist after they have been saved to the store;
-  // `null` checks allow to create entities on demand
-  if (!entity) {
-    entity = new ExampleEntity(id)
-
-    // Entity fields can be set using simple assignments
-    entity.count = BigInt.fromI32(0)
-  }
-
-  // BigInt and BigDecimal math are supported
-  entity.count = entity.count + BigInt.fromI32(1)
-
-  // Entity fields can be set based on event parameters
-  entity.owner = event.params.owner
-  entity.approved = event.params.approved
-
-  // Entities can be written to the store with `.save()`
-  entity.save()
-
-  // Note: If a handler doesn't require existing field values, it is faster
-  // _not_ to load the entity from the store. Instead, create it fresh with
-  // `new Entity(...)`, set the fields that should be updated and save the
-  // entity back to the store. Fields that were not set or unset remain
-  // unchanged, allowing for partial updates to be applied.
-
-  // It is also possible to access smart contracts from mappings. For
-  // example, the contract that has emitted the event can be connected to
-  // with:
-  //
-  // let contract = Contract.bind(event.address)
-  //
-  // The following functions can then be called on this contract to access
-  // state variables and other data:
-  //
-  // - contract.BAYC_PROVENANCE(...)
-  // - contract.MAX_APES(...)
-  // - contract.REVEAL_TIMESTAMP(...)
-  // - contract.apePrice(...)
-  // - contract.balanceOf(...)
-  // - contract.baseURI(...)
-  // - contract.getApproved(...)
-  // - contract.isApprovedForAll(...)
-  // - contract.maxApePurchase(...)
-  // - contract.name(...)
-  // - contract.owner(...)
-  // - contract.ownerOf(...)
-  // - contract.saleIsActive(...)
-  // - contract.startingIndex(...)
-  // - contract.startingIndexBlock(...)
-  // - contract.supportsInterface(...)
-  // - contract.symbol(...)
-  // - contract.tokenByIndex(...)
-  // - contract.tokenOfOwnerByIndex(...)
-  // - contract.tokenURI(...)
-  // - contract.totalSupply(...)
+/**
+ * Creates or loads a User entity
+ * @param address The user's address
+ * @returns User entity
+ */
+function getOrCreateUser(address: Address): User {
+	let id = address.toHex();
+	let user = User.load(id);
+	if (!user) {
+		user = new User(id);
+		user.totalMints = BigInt.fromI32(0);
+		user.totalTransfers = BigInt.fromI32(0);
+		user.save();
+	}
+	return user;
 }
 
-export function handleApprovalForAll(event: ApprovalForAll): void {}
+export function handleTransfer(event: Transfer): void {
+	// Input validation
+	if (event.params.tokenId === null) {
+		return;
+	}
 
-export function handleOwnershipTransferred(event: OwnershipTransferred): void {}
+	let fromUser = getOrCreateUser(event.params.from);
+	let toUser = getOrCreateUser(event.params.to);
 
-export function handleTransfer(event: Transfer): void {}
+	let tokenIdStr = event.params.tokenId.toString();
+	let token = Token.load(tokenIdStr);
+	if (!token) {
+		token = new Token(tokenIdStr);
+		token.tokenID = event.params.tokenId;
+		token.transferCount = BigInt.fromI32(0);
+	}
+	token.owner = toUser.id;
+	token.transferCount = token.transferCount.plus(BigInt.fromI32(1));
+	token.save();
+
+	// Create transfer event
+	let evtId = event.transaction.hash.toHex() + "-" + event.logIndex.toString();
+	let transfer = new TransferEvent(evtId);
+	transfer.from = fromUser.id;
+	transfer.to = toUser.id;
+	transfer.token = token.id;
+	transfer.blockNumber = event.block.number;
+	transfer.timestamp = event.block.timestamp;
+	transfer.save();
+
+	// Update counters
+	let fromAddress = event.params.from.toHex();
+	let toAddress = event.params.to.toHex();
+
+	if (fromAddress == ZERO_ADDRESS) {
+		// Mint
+		toUser.totalMints = toUser.totalMints.plus(BigInt.fromI32(1));
+	} else if (toAddress != ZERO_ADDRESS) {
+		// Normal transfer
+		fromUser.totalTransfers = fromUser.totalTransfers.plus(BigInt.fromI32(1));
+		toUser.totalTransfers = toUser.totalTransfers.plus(BigInt.fromI32(1));
+	}
+
+	fromUser.save();
+	toUser.save();
+}
